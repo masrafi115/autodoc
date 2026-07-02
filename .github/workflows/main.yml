@@ -101,8 +101,6 @@ jobs:
     # DART (dartdoc) SETUP & BUILD
     # ==========================================
    # ==========================================
-    # DART (dartdoc) SETUP & BUILD
-    # ==========================================
 # ==========================================
     # DART (dartdoc) SETUP & BUILD
     # ==========================================
@@ -120,25 +118,28 @@ jobs:
         VERSION="${{ github.event.inputs.package_version }}"
         if [ "$VERSION" = "latest" ]; then VERSION="any"; fi
         
-        # 3. Create a clean isolated directory
-        mkdir doc-builder && cd doc-builder
+        # 3. Clean up the package name if someone passes 'username/package'
+        RAW_NAME="${{ github.event.inputs.package_name }}"
+        CLEAN_NAME="${RAW_NAME##*/}"
+        echo "Original input: $RAW_NAME -> Cleaned package name: $CLEAN_NAME"
         
-        # Create a temporary pubspec.yaml to let 'pub' safely download the package
+        # 4. Create a temporary project workspace to download the package
+        mkdir doc-builder && cd doc-builder
         echo "name: doc_builder" > pubspec.yaml
         echo "environment: {sdk: '>=3.0.0 <4.0.0'}" >> pubspec.yaml
         
-        # Force dart to fetch the target package and its source code into the local cache
-        dart pub add "${{ github.event.inputs.package_name }}:$VERSION"
+        # Force dart to download the target package into the local cache
+        dart pub add "$CLEAN_NAME:$VERSION"
         
-        # 4. Find where pub actually downloaded the source code.
-        # It puts it in ~/.pub-cache/hosted/pub.dev/package_name-version/
-        # This find command will reliably locate it regardless of the exact version string.
-        PKG_DIR=$(find $HOME/.pub-cache/hosted/pub.dev/ -maxdepth 1 -type d -name "${{ github.event.inputs.package_name }}-*")
+        # 5. Find where pub downloaded it in the system cache
+        PKG_CACHE_DIR=$(find $HOME/.pub-cache/hosted/pub.dev/ -maxdepth 1 -type d -name "${CLEAN_NAME}-*")
+        echo "Found package cache directory at: $PKG_CACHE_DIR"
         
-        echo "Found package directory at: $PKG_DIR"
+        # 6. Copy the package out of the system cache to a safe, independent workspace
+        cp -R "$PKG_CACHE_DIR" "$GITHUB_WORKSPACE/target-package"
         
-        # 5. Move into the actual package source, pull its specific dependencies, and build docs
-        cd "$PKG_DIR"
+        # 7. Step into the safe workspace, pull local dependencies, and run dartdoc
+        cd "$GITHUB_WORKSPACE/target-package"
         dart pub get
         dart pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
     # ==========================================
