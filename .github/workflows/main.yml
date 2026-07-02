@@ -103,6 +103,9 @@ jobs:
    # ==========================================
     # DART (dartdoc) SETUP & BUILD
     # ==========================================
+# ==========================================
+    # DART (dartdoc) SETUP & BUILD
+    # ==========================================
     - name: Setup Dart
       if: ${{ github.event.inputs.language == 'dart' }}
       uses: dart-lang/setup-dart@v1
@@ -113,26 +116,30 @@ jobs:
         # 1. Activate dartdoc globally
         dart pub global activate dartdoc
         
-        # 2. Determine the version to fetch
+        # 2. Setup version constraint
         VERSION="${{ github.event.inputs.package_version }}"
+        if [ "$VERSION" = "latest" ]; then VERSION="any"; fi
         
-        # If 'latest', fetch the latest version string using curl from the pub.dev API
-        if [ "$VERSION" = "latest" ]; then
-          VERSION=$(curl -s https://pub.dev/api/packages/${{ github.event.inputs.package_name }} | jq -r '.latest.version')
-        fi
+        # 3. Create a clean isolated directory
+        mkdir doc-builder && cd doc-builder
         
-        echo "Fetching version: $VERSION"
+        # Create a temporary pubspec.yaml to let 'pub' safely download the package
+        echo "name: doc_builder" > pubspec.yaml
+        echo "environment: {sdk: '>=3.0.0 <4.0.0'}" >> pubspec.yaml
         
-        # 3. Download and extract the package archive directly from pub.dev
-        mkdir target-package
-        curl -L https://pub.dev/packages/${{ github.event.inputs.package_name }}/versions/$VERSION.tar.gz -o package.tar.gz
-        tar -xzf package.tar.gz -C ./target-package
+        # Force dart to fetch the target package and its source code into the local cache
+        dart pub add "${{ github.event.inputs.package_name }}:$VERSION"
         
-        # 4. Move into the actual package, resolve dependencies, and document it
-        cd target-package
+        # 4. Find where pub actually downloaded the source code.
+        # It puts it in ~/.pub-cache/hosted/pub.dev/package_name-version/
+        # This find command will reliably locate it regardless of the exact version string.
+        PKG_DIR=$(find $HOME/.pub-cache/hosted/pub.dev/ -maxdepth 1 -type d -name "${{ github.event.inputs.package_name }}-*")
+        
+        echo "Found package directory at: $PKG_DIR"
+        
+        # 5. Move into the actual package source, pull its specific dependencies, and build docs
+        cd "$PKG_DIR"
         dart pub get
-        
-        # Run dartdoc as the root package and output globally
         dart pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
     # ==========================================
     # DEPLOYMENT (Unified for all languages)
