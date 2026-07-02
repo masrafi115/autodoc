@@ -1,0 +1,142 @@
+name: Dynamic Multi-Lang Doc Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'Select the programming language/tool'
+        required: true
+        type: choice
+        options:
+          - php
+          - python
+          - dart
+        default: 'php'
+      package_name:
+        description: 'Package Name (e.g., monolog/monolog, requests, path)'
+        required: true
+        type: string
+        default: 'monolog/monolog'
+      package_version:
+        description: 'Version/Constraint (e.g., dev-main, 2.31.0, latest)'
+        required: true
+        type: string
+        default: 'latest'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Builder Repo
+      uses: actions/checkout@v4
+
+    # ==========================================
+    # PHP (phpDocumentor) SETUP & BUILD
+    # ==========================================
+    - name: Setup PHP
+      if: ${{ github.event.inputs.language == 'php' }}
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        tools: phpdoc
+        coverage: none
+
+    - name: Download & Build PHP Docs
+      if: ${{ github.event.inputs.language == 'php' }}
+      run: |
+        mkdir target-package && cd target-package
+        composer init --name="doc/builder" --no-interaction
+        VERSION="${{ github.event.inputs.package_version }}"
+        # Default fallback if 'latest' is kept for PHP
+        if [ "$VERSION" = "latest" ]; then VERSION="*"; fi
+        composer require "${{ github.event.inputs.package_name }}:$VERSION" --no-interaction
+        cd ..
+        phpdoc \
+          -d "./target-package/vendor/${{ github.event.inputs.package_name }}" \
+          -t "./output-docs" \
+          --ignore "*/vendor/*,*/tests/*,*/Tests/*" \
+          --title="${{ github.event.inputs.package_name }} API Docs"
+
+    # ==========================================
+    # PYTHON (Sphinx) SETUP & BUILD
+    # ==========================================
+    - name: Setup Python
+      if: ${{ github.event.inputs.language == 'python' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Download & Build Python Docs
+      if: ${{ github.event.inputs.language == 'python' }}
+      run: |
+        pip install sphinx sphinx-rtd-theme
+        
+        # Install target package
+        if [ "${{ github.event.inputs.package_version }}" = "latest" ]; then
+          pip install "${{ github.event.inputs.package_name }}"
+        else
+          pip install "${{ github.event.inputs.package_name }}==${{ github.event.inputs.package_version }}"
+        fi
+        
+        # Auto-generate Sphinx configuration and API stubs
+        sphinx-apidoc -F -o ./sphinx-source $(python -c "import ${{ github.event.inputs.package_name }} as m; print(m.__path__[0])")
+        
+        # Force HTML theme to ReadTheDocs for a clean look
+        echo "html_theme = 'sphinx_rtd_theme'" >> ./sphinx-source/conf.py
+        
+        # Compile to HTML
+        sphinx-build -b html ./sphinx-source ./output-docs
+
+    # ==========================================
+    # DART (dartdoc) SETUP & BUILD
+    # ==========================================
+    - name: Setup Dart
+      if: ${{ github.event.inputs.language == 'dart' }}
+      uses: dart-lang/setup-dart@v1
+
+    - name: Download & Build Dart Docs
+      if: ${{ github.event.inputs.language == 'dart' }}
+      run: |
+        # Global active dartdoc
+        dart pub global activate dartdoc
+        
+        # Create a dummy project to fetch the target hosted package
+        mkdir dart_project && cd dart_project
+        dart create -t console .
+        
+        if [ "${{ github.event.inputs.package_version }}" = "latest" ]; then
+          dart pub add ${{ github.event.inputs.package_name }}
+        else
+          dart pub add ${{ github.event.inputs.package_name }}:${{ github.event.inputs.package_version }}
+        fi
+        
+        # Locate where pub cached the package files
+        PUB_CACHE_DIR=$(dart pub global run dartdoc --help | grep -oE "(/[^ ]+/.pub-cache)" || echo "$HOME/.pub-cache")
+        PACKAGE_DIR=$(find $PUB_CACHE_DIR -type d -name "${{ github.event.inputs.package_name }}-*" | head -n 1)
+        
+        # Run dartdoc inside the package folder but output to our global output-docs
+        cd $PACKAGE_DIR
+        dart pub get
+        dart pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
+
+    # ==========================================
+    # DEPLOYMENT (Unified for all languages)
+    # ==========================================
+    - name: Upload Pages Artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./output-docs
+
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
