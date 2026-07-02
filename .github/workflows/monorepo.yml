@@ -69,7 +69,7 @@ jobs:
       if: ${{ github.event.inputs.language == 'dart' }}
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.x'
+        flutter-version: '3.44.x'
         channel: 'stable'
 
     # ==========================================
