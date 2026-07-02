@@ -1,0 +1,196 @@
+name: Dynamic Multi-Lang Doc Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'Select the language engine'
+        required: true
+        type: choice
+        options:
+          - php
+          - python
+          - dart
+        default: 'php'
+      source_type:
+        description: 'Where is the target code located?'
+        required: true
+        type: choice
+        options:
+          - registry   # Pull from Packagist, PyPI, or Pub.dev
+          - repository # Pull directly from a GitHub repository URL/slug
+        default: 'registry'
+      package_name:
+        description: 'Package/Repo (e.g., monolog/monolog or felangel/bloc)'
+        required: true
+        type: string
+        default: 'monolog/monolog'
+      package_version:
+        description: 'Version, constraint, or Git ref (e.g., latest, ^2.0, main, v1.0.0)'
+        required: true
+        type: string
+        default: 'latest'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Builder Repo
+      uses: actions/checkout@v4
+
+    # ==========================================
+    # GLOBAL ENVIRONMENT SETUPS
+    # ==========================================
+    - name: Setup PHP Environment
+      if: ${{ github.event.inputs.language == 'php' }}
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        tools: phpdoc
+        coverage: none
+
+    - name: Setup Python Environment
+      if: ${{ github.event.inputs.language == 'python' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Setup Flutter/Dart Environment
+      if: ${{ github.event.inputs.language == 'dart' }}
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.22.x'
+        channel: 'stable'
+
+    # ==========================================
+    # PHP ENGINE (phpDocumentor)
+    # ==========================================
+    - name: Build PHP Docs (Registry)
+      if: ${{ github.event.inputs.language == 'php' && github.event.inputs.source_type == 'registry' }}
+      run: |
+        mkdir target-package && cd target-package
+        composer init --name="doc/builder" --no-interaction
+        VERSION="${{ github.event.inputs.package_version }}"
+        if [ "$VERSION" = "latest" ]; then VERSION="*"; fi
+        composer require "${{ github.event.inputs.package_name }}:$VERSION" --no-interaction
+        cd ..
+        phpdoc -d "./target-package/vendor/${{ github.event.inputs.package_name }}" -t "./output-docs" --ignore "*/vendor/*,*/tests/*,*/Tests/*" --title="${{ github.event.inputs.package_name }} API"
+
+    - name: Build PHP Docs (Repository)
+      if: ${{ github.event.inputs.language == 'php' && github.event.inputs.source_type == 'repository' }}
+      run: |
+        git clone --depth 1 https://github.com/${{ github.event.inputs.package_name }}.git target-package
+        cd target-package
+        if [ "${{ github.event.inputs.package_version }}" != "latest" ]; then
+          git fetch --tags && git checkout ${{ github.event.inputs.package_version }}
+        fi
+        composer install --no-interaction --prefer-dist
+        cd ..
+        phpdoc -d "./target-package" -t "./output-docs" --ignore "*/vendor/*,*/tests/*,*/Tests/*" --title="${{ github.event.inputs.package_name }} API"
+
+
+    # ==========================================
+    # PYTHON ENGINE (Sphinx)
+    # ==========================================
+    - name: Build Python Docs (Registry)
+      if: ${{ github.event.inputs.language == 'python' && github.event.inputs.source_type == 'registry' }}
+      run: |
+        pip install sphinx sphinx-rtd-theme
+        if [ "${{ github.event.inputs.package_version }}" = "latest" ]; then
+          pip install "${{ github.event.inputs.package_name }}"
+        else
+          pip install "${{ github.event.inputs.package_name }}==${{ github.event.inputs.package_version }}"
+        fi
+        CLEAN_NAME="${{ github.event.inputs.package_name }}"
+        CLEAN_NAME="${CLEAN_NAME##*/}"
+        sphinx-apidoc -F -o ./sphinx-source $(python -c "import $CLEAN_NAME as m; print(m.__path__[0])")
+        echo "html_theme = 'sphinx_rtd_theme'" >> ./sphinx-source/conf.py
+        sphinx-build -b html ./sphinx-source ./output-docs
+
+    - name: Build Python Docs (Repository)
+      if: ${{ github.event.inputs.language == 'python' && github.event.inputs.source_type == 'repository' }}
+      run: |
+        pip install sphinx sphinx-rtd-theme
+        git clone --depth 1 https://github.com/${{ github.event.inputs.package_name }}.git target-package
+        cd target-package
+        if [ "${{ github.event.inputs.package_version }}" != "latest" ]; then
+          git fetch --tags && git checkout ${{ github.event.inputs.package_version }}
+        fi
+        # Install the cloned local package directory directly so Sphinx can map its pathing
+        pip install .
+        
+        TARGET_DIR="."
+        # Fallback search if source files live in a nested 'src' or setup folder
+        if [ -d "src" ]; then TARGET_DIR="src"; fi
+        
+        cd $GITHUB_WORKSPACE
+        sphinx-apidoc -F -o ./sphinx-source ./target-package/$TARGET_DIR
+        echo "html_theme = 'sphinx_rtd_theme'" >> ./sphinx-source/conf.py
+        sphinx-build -b html ./sphinx-source ./output-docs
+
+
+    # ==========================================
+    # DART / FLUTTER ENGINE (dartdoc)
+    # ==========================================
+    - name: Build Dart Docs (Registry)
+      if: ${{ github.event.inputs.language == 'dart' && github.event.inputs.source_type == 'registry' }}
+      run: |
+        flutter pub global activate dartdoc
+        VERSION="${{ github.event.inputs.package_version }}"
+        if [ "$VERSION" = "latest" ]; then VERSION="any"; fi
+        
+        RAW_NAME="${{ github.event.inputs.package_name }}"
+        CLEAN_NAME="${RAW_NAME##*/}"
+        
+        mkdir doc-builder && cd doc-builder
+        echo "name: doc_builder" > pubspec.yaml
+        echo "environment: {sdk: '>=3.0.0 <4.0.0'}" >> pubspec.yaml
+        flutter pub add "$CLEAN_NAME:$VERSION"
+        
+        PKG_CACHE_DIR=$(find $HOME/.pub-cache/hosted/pub.dev/ -maxdepth 1 -type d -name "${CLEAN_NAME}-*")
+        cp -R "$PKG_CACHE_DIR" "$GITHUB_WORKSPACE/target-package"
+        
+        cd "$GITHUB_WORKSPACE/target-package"
+        flutter pub get
+        flutter pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
+
+    - name: Build Dart Docs (Repository)
+      if: ${{ github.event.inputs.language == 'dart' && github.event.inputs.source_type == 'repository' }}
+      run: |
+        flutter pub global activate dartdoc
+        git clone --depth 1 https://github.com/${{ github.event.inputs.package_name }}.git target-repo
+        cd target-repo
+        if [ "${{ github.event.inputs.package_version }}" != "latest" ] && [ "${{ github.event.inputs.package_version }}" != "any" ]; then
+          git fetch --tags && git checkout ${{ github.event.inputs.package_version }}
+        fi
+        
+        TARGET_DIR="."
+        if [ ! -f "pubspec.yaml" ]; then
+          TARGET_DIR=$(find . -name "pubspec.yaml" -not -path '*/.*' | head -n 1 | xargs dirname)
+        fi
+        cd "$TARGET_DIR"
+        flutter pub get
+        flutter pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
+
+
+    # ==========================================
+    # UNIFIED DEPLOYMENT TO GITHUB PAGES
+    # ==========================================
+    - name: Upload Pages Artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./output-docs
+
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
