@@ -100,6 +100,9 @@ jobs:
     # ==========================================
     # DART (dartdoc) SETUP & BUILD
     # ==========================================
+   # ==========================================
+    # DART (dartdoc) SETUP & BUILD
+    # ==========================================
     - name: Setup Dart
       if: ${{ github.event.inputs.language == 'dart' }}
       uses: dart-lang/setup-dart@v1
@@ -107,28 +110,30 @@ jobs:
     - name: Download & Build Dart Docs
       if: ${{ github.event.inputs.language == 'dart' }}
       run: |
-        # Global active dartdoc
+        # 1. Activate dartdoc globally
         dart pub global activate dartdoc
         
-        # Create a dummy project to fetch the target hosted package
-        mkdir dart_project && cd dart_project
-        dart create -t console .
+        # 2. Determine the version to fetch
+        VERSION="${{ github.event.inputs.package_version }}"
         
-        if [ "${{ github.event.inputs.package_version }}" = "latest" ]; then
-          dart pub add ${{ github.event.inputs.package_name }}
-        else
-          dart pub add ${{ github.event.inputs.package_name }}:${{ github.event.inputs.package_version }}
+        # If 'latest', fetch the latest version string using curl from the pub.dev API
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(curl -s https://pub.dev/api/packages/${{ github.event.inputs.package_name }} | jq -r '.latest.version')
         fi
         
-        # Locate where pub cached the package files
-        PUB_CACHE_DIR=$(dart pub global run dartdoc --help | grep -oE "(/[^ ]+/.pub-cache)" || echo "$HOME/.pub-cache")
-        PACKAGE_DIR=$(find $PUB_CACHE_DIR -type d -name "${{ github.event.inputs.package_name }}-*" | head -n 1)
+        echo "Fetching version: $VERSION"
         
-        # Run dartdoc inside the package folder but output to our global output-docs
-        cd $PACKAGE_DIR
+        # 3. Download and extract the package archive directly from pub.dev
+        mkdir target-package
+        curl -L https://pub.dev/packages/${{ github.event.inputs.package_name }}/versions/$VERSION.tar.gz -o package.tar.gz
+        tar -xzf package.tar.gz -C ./target-package
+        
+        # 4. Move into the actual package, resolve dependencies, and document it
+        cd target-package
         dart pub get
+        
+        # Run dartdoc as the root package and output globally
         dart pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
-
     # ==========================================
     # DEPLOYMENT (Unified for all languages)
     # ==========================================
