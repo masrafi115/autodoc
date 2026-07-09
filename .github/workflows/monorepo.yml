@@ -128,11 +128,11 @@ jobs:
         fi
         # Install the cloned local package directory directly so Sphinx can map its pathing
         pip install .
-        
+
         TARGET_DIR="."
         # Fallback search if source files live in a nested 'src' or setup folder
         if [ -d "src" ]; then TARGET_DIR="src"; fi
-        
+
         cd $GITHUB_WORKSPACE
         sphinx-apidoc -F -o ./sphinx-source ./target-package/$TARGET_DIR
         echo "html_theme = 'sphinx_rtd_theme'" >> ./sphinx-source/conf.py
@@ -148,18 +148,18 @@ jobs:
         flutter pub global activate dartdoc
         VERSION="${{ github.event.inputs.package_version }}"
         if [ "$VERSION" = "latest" ]; then VERSION="any"; fi
-        
+
         RAW_NAME="${{ github.event.inputs.package_name }}"
         CLEAN_NAME="${RAW_NAME##*/}"
-        
+
         mkdir doc-builder && cd doc-builder
         echo "name: doc_builder" > pubspec.yaml
         echo "environment: {sdk: '>=3.0.0 <4.0.0'}" >> pubspec.yaml
         flutter pub add "$CLEAN_NAME:$VERSION"
-        
+
         PKG_CACHE_DIR=$(find $HOME/.pub-cache/hosted/pub.dev/ -maxdepth 1 -type d -name "${CLEAN_NAME}-*")
         cp -R "$PKG_CACHE_DIR" "$GITHUB_WORKSPACE/target-package"
-        
+
         cd "$GITHUB_WORKSPACE/target-package"
         flutter pub get
         flutter pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
@@ -173,7 +173,7 @@ jobs:
         if [ "${{ github.event.inputs.package_version }}" != "latest" ] && [ "${{ github.event.inputs.package_version }}" != "any" ]; then
           git fetch --tags && git checkout ${{ github.event.inputs.package_version }}
         fi
-        
+
         TARGET_DIR="."
         if [ ! -f "pubspec.yaml" ]; then
           TARGET_DIR=$(find . -name "pubspec.yaml" -not -path '*/.*' | head -n 1 | xargs dirname)
@@ -182,6 +182,58 @@ jobs:
         flutter pub get
         flutter pub global run dartdoc --output "$GITHUB_WORKSPACE/output-docs"
 
+
+    # ==========================================
+    # ARTIFACT NAMING
+    #   registry:   libname-toolname
+    #   repository: author-libname-toolname
+    # ==========================================
+    - name: Determine Artifact Filename
+      id: naming
+      run: |
+        LANGUAGE="${{ github.event.inputs.language }}"
+        SOURCE_TYPE="${{ github.event.inputs.source_type }}"
+        PACKAGE_NAME="${{ github.event.inputs.package_name }}"
+
+        case "$LANGUAGE" in
+          php) TOOL_NAME="phpdocumentor" ;;
+          python) TOOL_NAME="sphinx" ;;
+          dart) TOOL_NAME="dartdoc" ;;
+        esac
+
+        # libname is always the final path segment (strips any vendor/owner prefix)
+        LIBNAME=$(echo "$PACKAGE_NAME" | rev | cut -d'/' -f1 | rev)
+
+        if [ "$SOURCE_TYPE" = "repository" ]; then
+          # owner/repo -> author-libname-toolname
+          if [[ "$PACKAGE_NAME" == */* ]]; then
+            AUTHOR=$(echo "$PACKAGE_NAME" | cut -d'/' -f1)
+          else
+            AUTHOR="unknown"
+          fi
+          ARTIFACT_NAME="${AUTHOR}-${LIBNAME}-${TOOL_NAME}"
+        else
+          # registry -> libname-toolname (vendor prefix, if any, dropped)
+          ARTIFACT_NAME="${LIBNAME}-${TOOL_NAME}"
+        fi
+
+        # Sanitize for use as a filename/artifact name: lowercase, safe chars only
+        ARTIFACT_NAME=$(echo "$ARTIFACT_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | sed -E 's/-+/-/g')
+
+        echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+        echo "Computed artifact filename: ${ARTIFACT_NAME}.zip"
+
+    - name: Package Docs as Zip
+      run: |
+        cd output-docs
+        zip -r "../${{ steps.naming.outputs.artifact_name }}.zip" .
+        cd ..
+
+    - name: Upload Build Artifact (Zip)
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.naming.outputs.artifact_name }}
+        path: ${{ steps.naming.outputs.artifact_name }}.zip
 
     # ==========================================
     # UNIFIED DEPLOYMENT TO GITHUB PAGES
